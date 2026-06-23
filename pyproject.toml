@@ -1,0 +1,59 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "nextcloud_plugin"
+version = "0.1.0"
+description = "Nextcloud storage integration for OSF (osf.io addon + GravyValet foreign imp + WaterButler provider)"
+readme = "README.md"
+authors = ["Takehiko Nawata <samugari.penguin@gmail.com>"]
+maintainers = ["Takehiko Nawata <samugari.penguin@gmail.com>"]
+license = "Apache-2.0"
+keywords = ["osf", "gravyvalet", "waterbutler", "nextcloud", "webdav", "storage", "addon"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+]
+packages = [
+    { include = "nextcloud_plugin", from = "src" }
+]
+include = [
+    { path = "src/nextcloud_plugin/addon_imp/static", format = ["sdist", "wheel"] },
+    { path = "src/nextcloud_plugin/addon/static", format = ["sdist", "wheel"] },
+    { path = "src/nextcloud_plugin/addon/templates", format = ["sdist", "wheel"] },
+    { path = "src/nextcloud_plugin/addon/migrations", format = ["sdist", "wheel"] },
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9"
+django = ">=4.2"
+# `owncloud` python module (used by the osf.io addon to browse folders / validate creds)
+pyocclient = ">=0.6"
+# WaterButler provider talks WebDAV over aiohttp (also provided by the WB host)
+aiohttp = ">=3.8"
+
+# WaterButler discovers the provider through this entry point.
+[tool.poetry.plugins."waterbutler.providers"]
+nextcloud = "nextcloud_plugin.provider.provider:NextcloudProvider"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0.0"
+pytest-django = ">=4.5.0"
+pytest-asyncio = ">=0.21.0"
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"

@@ -1,15 +1,25 @@
 """GravyValet storage addon imp for Nextcloud.
 
-Nextcloud speaks the same WebDAV dialect as ownCloud (``/remote.php/dav/``,
-``/remote.php/webdav/``), so this imp is adapted from GravyValet's built-in
-``addon_imps.storage.owncloud`` imp. It is kept self-contained here (rather than
-subclassing the built-in) so the plugin does not couple to GravyValet's internal
-package layout.
+Nextcloud speaks WebDAV. This imp targets the **user-relative** WebDAV endpoint
+``/remote.php/webdav/`` (which resolves to the authenticated user's storage root
+without needing the username in the URL) — the same endpoint the ported
+WaterButler provider uses (``_webdav_url_``).
 
-``build_wb_config`` emits ``{folder, host, verify_ssl}`` — exactly the WaterButler
-settings the ported ``nextcloud_plugin.provider.NextcloudProvider`` consumes; the
-``host``/``username``/``password`` credentials reach WaterButler from the osf.io
-addon's ``serialize_waterbutler_credentials``.
+Design / contract:
+  * ``api_base_url`` (the account's "Host URL") is the Nextcloud **base URL** — the
+    host root, e.g. ``https://nextcloud.example/`` (GRDM parity). It is NOT a deep
+    WebDAV path. The imp appends ``remote.php/webdav/`` to it for all requests.
+  * The username is intentionally NOT required: for the username/password flow GV
+    calls ``execute_post_auth_hook()`` with no extras, so ``auth_result_extras`` is
+    empty and the credentials are not exposed to the imp. ``/remote.php/webdav/`` is
+    relative to the authenticated user, so we don't need it.
+  * ``build_wb_config`` emits ``{folder, host, verify_ssl}``; ``host`` is the base URL
+    and the WaterButler provider appends ``/remote.php/webdav/`` itself.
+
+Originally adapted from GravyValet's built-in ``addon_imps.storage.owncloud`` imp,
+but reworked: that imp PROPFINDs ``api_base_url`` verbatim (so it requires a deep
+WebDAV ``api_base_url``) and does a fragile current-user-principal two-step whose
+URL joining only resolves from a host-root base. This version is host-root-first.
 
 NOTE (follow-up): the ported WaterButler provider additionally supports file
 *revisions* (Nextcloud version API) and, for the institutions flavor, the OCS
@@ -28,17 +38,14 @@ from addon_toolkit.interfaces import storage
 from addon_toolkit.interfaces.storage import ItemType
 
 
+# Nextcloud's legacy WebDAV endpoint, relative to api_base_url. It is scoped to the
+# authenticated user, so (unlike /remote.php/dav/files/<username>/) it needs no username.
+_WEBDAV_ROOT = "remote.php/webdav/"
+
 _BUILD_PROPFIND_CURRENT_USER_PRINCIPAL = """<?xml version="1.0" encoding="UTF-8"?>
 <d:propfind xmlns:d="DAV:">
     <d:prop>
         <d:current-user-principal/>
-    </d:prop>
-</d:propfind>"""
-
-_BUILD_PROPFIND_DISPLAYNAME = """<?xml version="1.0" encoding="UTF-8"?>
-<d:propfind xmlns:d="DAV:">
-    <d:prop>
-        <d:displayname/>
     </d:prop>
 </d:propfind>"""
 
@@ -50,61 +57,44 @@ _BUILD_PROPFIND_ALLPROPS = """<?xml version="1.0" encoding="UTF-8"?>
 
 class NextcloudStorageImp(storage.StorageAddonHttpRequestorImp):
     async def get_external_account_id(self, auth_result_extras: dict[str, str]) -> str:
+        # Validate the credentials by PROPFIND-ing the user's WebDAV root. The path
+        # is relative, so it resolves against the host-root api_base_url correctly.
         try:
-            headers = {
-                "Depth": "0",
-            }
             async with self.network.PROPFIND(
-                uri_path=self._strip_absolute_path(""),
-                headers=headers,
+                uri_path=self._dav_uri("/"),
+                headers={"Depth": "0"},
                 content=_BUILD_PROPFIND_CURRENT_USER_PRINCIPAL,
             ) as response:
                 if response.http_status in (401, 403):
+                    raise ValidationError("Invalid Nextcloud credentials (unauthorized).")
+                if int(response.http_status) >= 400:
                     raise ValidationError(
-                        "Invalid Nextcloud credentials (unauthorized)."
+                        "Please check the Host URL — it does not point to a valid "
+                        "Nextcloud deployment."
                     )
                 response_xml = await response.text_content()
-                try:
-                    current_user_principal_url = self._parse_current_user_principal(
-                        response_xml
-                    )
-                except ValueError:
-                    username = (
-                        auth_result_extras.get("username") or self._fallback_username
-                    )
-                    if not username:
-                        raise ValueError(
-                            "Username is required for fallback but not provided."
-                        )
-                    current_user_principal_url = f"/remote.php/dav/files/{username}/"
-                except ET.ParseError:
-                    raise ValidationError(
-                        "Please check base url, as it doesn't point to a valid Nextcloud deployment"
-                    )
-
-            current_user_principal_url = current_user_principal_url.lstrip("/")
-
-            async with self.network.PROPFIND(
-                uri_path=self._strip_absolute_path(current_user_principal_url),
-                headers=headers,
-                content=_BUILD_PROPFIND_DISPLAYNAME,
-            ) as response:
-                if response.http_status in (401, 403):
-                    raise ValidationError(
-                        "Invalid Nextcloud credentials (unauthorized)."
-                    )
-                response_xml = await response.text_content()
-                return self._parse_displayname(response_xml)
         except ValueError as exc:
-            if "relative url may not alter the base url" in str(exc).lower():
+            # GravyvaletHttpRequestor raises ValueError for malformed/escaping URLs.
+            if "base url" in str(exc).lower() or "scheme or host" in str(exc).lower():
                 raise ValidationError(
-                    "Invalid host URL. Please check your Nextcloud base URL."
+                    "Invalid Host URL. Please check your Nextcloud base URL."
                 )
             raise
 
-    @property
-    def _fallback_username(self) -> str | None:
-        return "default-username"
+        # Best-effort stable account id: the username in the current-user-principal
+        # href (".../principals/users/<username>/"). A non-WebDAV response (HTML) means
+        # the base URL is wrong; a WebDAV response that simply lacks the principal is
+        # fine (we just return an empty id, as the s3compat imp does).
+        try:
+            principal = self._parse_current_user_principal(response_xml)
+        except ET.ParseError:
+            raise ValidationError(
+                "Please check the Host URL — it does not point to a valid "
+                "Nextcloud deployment."
+            )
+        except ValueError:
+            return ""
+        return principal.rstrip("/").rsplit("/", 1)[-1]
 
     async def list_root_items(self, page_cursor: str = "") -> storage.ItemSampleResult:
         root_item = storage.ItemResult(
@@ -117,16 +107,11 @@ class NextcloudStorageImp(storage.StorageAddonHttpRequestorImp):
         return storage.ItemSampleResult(items=[root_item])
 
     async def get_item_info(self, item_id: str) -> storage.ItemResult:
-        item_type, path = _parse_item_id(item_id)
-        url = self._strip_absolute_path(path)
-
-        headers = {
-            "Depth": "0",
-        }
+        _item_type, path = _parse_item_id(item_id)
 
         async with self.network.PROPFIND(
-            uri_path=url,
-            headers=headers,
+            uri_path=self._dav_uri(path),
+            headers={"Depth": "0"},
             content=_BUILD_PROPFIND_ALLPROPS,
         ) as response:
             response_xml = await response.text_content()
@@ -136,8 +121,7 @@ class NextcloudStorageImp(storage.StorageAddonHttpRequestorImp):
             )
             if response_element is None:
                 raise ValueError("No response element found in PROPFIND response")
-            item_result = self._parse_response_element(response_element, path)
-            return item_result
+            return self._parse_response_element(response_element, path)
 
     async def list_child_items(
         self,
@@ -146,14 +130,10 @@ class NextcloudStorageImp(storage.StorageAddonHttpRequestorImp):
         item_type: storage.ItemType | None = None,
     ) -> storage.ItemSampleResult:
         _item_type, path = _parse_item_id(item_id)
-        relative_path = self._strip_absolute_path(path)
-        headers = {
-            "Depth": "1",
-        }
 
         async with self.network.PROPFIND(
-            uri_path=relative_path,
-            headers=headers,
+            uri_path=self._dav_uri(path),
+            headers={"Depth": "1"},
             content=_BUILD_PROPFIND_ALLPROPS,
         ) as response:
             response_xml = await response.text_content()
@@ -164,9 +144,9 @@ class NextcloudStorageImp(storage.StorageAddonHttpRequestorImp):
                 href_element = response_element.find("d:href", ns)
                 if href_element is None or not href_element.text:
                     continue
-                href = href_element.text
-                item_path = self._href_to_path(href)
+                item_path = self._href_to_path(href_element.text)
 
+                # skip the listed collection's own entry
                 if item_path.rstrip("/") == path.rstrip("/"):
                     continue
 
@@ -177,23 +157,21 @@ class NextcloudStorageImp(storage.StorageAddonHttpRequestorImp):
 
             return storage.ItemSampleResult(items=items)
 
-    def _strip_absolute_path(self, path: str) -> str:
-        return path.lstrip("/")
+    def _dav_uri(self, path: str) -> str:
+        """WebDAV request path (relative to api_base_url) for a logical storage path."""
+        return _WEBDAV_ROOT + path.lstrip("/")
 
     async def build_wb_config(self) -> dict:
-        base_url = self.config.external_api_url.rstrip("/")
-        parsed_url = urlparse(base_url)
-
-        root_host = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        # api_base_url is the Nextcloud base URL; the WaterButler provider appends
+        # /remote.php/webdav/ to `host` itself, so pass the base URL through as-is.
         folder_path = ""
-
         if self.config.connected_root_id:
             _, subpath = _parse_item_id(self.config.connected_root_id)
             folder_path = subpath.strip("/")
 
         return {
             "folder": f"/{folder_path}",
-            "host": root_host,
+            "host": self.config.external_api_url.rstrip("/"),
             "verify_ssl": True,
         }
 
@@ -221,44 +199,20 @@ class NextcloudStorageImp(storage.StorageAddonHttpRequestorImp):
         )
 
     def _parse_current_user_principal(self, response_xml: str) -> str:
-        return self._parse_property(
-            response_xml,
-            xpath=".//d:current-user-principal/d:href",
-            error_message="current-user-principal not found in response",
-        )
-
-    def _parse_displayname(self, response_xml: str) -> str:
-        try:
-            return self._parse_property(
-                response_xml,
-                xpath=".//d:displayname",
-                error_message="displayname not found in response",
-            )
-        except ValueError:
-            return "default-name"
-
-    def _parse_property(self, response_xml: str, xpath: str, error_message: str) -> str:
         ns = {"d": "DAV:"}
-        root = ET.fromstring(response_xml)
-        element = root.find(xpath, ns)
+        root = ET.fromstring(response_xml)  # raises ET.ParseError on non-XML (HTML)
+        element = root.find(".//d:current-user-principal/d:href", ns)
         if element is not None and element.text:
             return element.text
-        else:
-            raise ValueError(error_message)
+        raise ValueError("current-user-principal not found in response")
 
     def _href_to_path(self, href: str) -> str:
-        parsed_href = urlparse(unquote(href))
-        href_path = parsed_href.path.lstrip("/")
-
-        base_path = urlparse(self.config.external_api_url).path.rstrip("/").lstrip("/")
-        if href_path.startswith(base_path):
-            # fmt: off
-            path = href_path[len(base_path):]
-        else:
-            path = href_path
-
-        path = path.strip("/")
-        return path or "/"
+        """Map a WebDAV href back to a logical storage path (strip the endpoint prefix)."""
+        href_path = urlparse(unquote(href)).path.lstrip("/")
+        if href_path.startswith(_WEBDAV_ROOT):
+            href_path = href_path[len(_WEBDAV_ROOT):]  # fmt: skip
+        href_path = href_path.strip("/")
+        return f"/{href_path}" if href_path else "/"
 
 
 def _make_item_id(item_type: storage.ItemType, path: str) -> str:

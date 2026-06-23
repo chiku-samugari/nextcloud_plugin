@@ -26,9 +26,31 @@ related to upstream's existing **ownCloud** support.
 1. `pip install nextcloud_plugin`
 2. In `api/base/settings/local.py`: add `'nextcloud_plugin.addon'` to `INSTALLED_APPS`
    and `'nextcloud'` to `ADDONS_FOLDER_CONFIGURABLE`.
-3. Add `'addons_nextcloud'` to `addons` in `addons.json` (and to `addons_default` /
-   `addons_archivable` / `addons_commentable` if desired).
+3. Add `'nextcloud'` (the addon `short_name`) to `addons` in `addons.json` (and to
+   `addons_default` / `addons_archivable` / `addons_commentable` if desired).
 4. Apply the migration (see "Migration" below), then restart osf.io.
+
+#### Configuration (osf.io `api/base/settings/local.py`)
+
+Per-deployment settings are read from the host osf.io Django settings (the same
+`api/base/settings/local.py` used above), via `getattr` with built-in fallbacks — do
+**not** edit files inside the installed package. All are optional:
+
+| Setting | Type | Default | Meaning |
+|---------|------|---------|---------|
+| `NEXTCLOUD_USE_SSL` | bool | `True` | Verify the Nextcloud server's TLS certificate. |
+| `NEXTCLOUD_MAX_UPLOAD_SIZE` | int (MB) | `5120` (5 × 1024) | Max file size the osf.io addon / front-end permits. |
+| `NEXTCLOUD_DEFAULT_HOSTS` | list[str] | `[]` | Suggested Nextcloud hosts. Largely **vestigial**: in the GRDM2 (angular-osf + GravyValet) architecture the endpoint/host of a storage service lives on a GravyValet `ExternalStorageService`, not here. |
+
+```python
+# osf.io/api/base/settings/local.py
+NEXTCLOUD_USE_SSL = True
+NEXTCLOUD_MAX_UPLOAD_SIZE = 10 * 1024  # 10 GB
+```
+
+Per-service settings (endpoint host, per-service upload / concurrency limits, the
+connected folder) are configured on the **GravyValet `ExternalStorageService`**, not in
+these files.
 
 ### GravyValet
 1. `poetry add nextcloud_plugin` (or `pip install`).

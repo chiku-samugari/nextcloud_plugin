@@ -13,12 +13,26 @@ Ported from GakuNin RDM (`RDM-osf.io/addons/nextcloud`, `RDM-waterbutler/.../pro
 Nextcloud speaks WebDAV, so the WaterButler provider and the GravyValet imp are closely
 related to upstream's existing **ownCloud** support.
 
-## Names to register (the values you must reference when configuring the hosts)
+## Names to register (the identifier model)
 
-- WaterButler provider entry point / `wb_key`: **`nextcloud`**
-- GravyValet `addon_imp_name`: **`NEXTCLOUD`** (or the package name `nextcloud_plugin.addon_imp`)
-- osf.io addon Django app: **`nextcloud_plugin.addon`** (app label `addons_nextcloud`,
-  `short_name` `nextcloud`)
+There is **one canonical lowercase key — `nextcloud` — and every layer must agree on it:**
+
+> `addon_imp_name.lower()` == `wb_key` == WaterButler entry-point name == provider `NAME` == osf.io addon `short_name`
+
+| Where it appears | Value |
+|---|---|
+| GravyValet `addon_imp_name` (and the `ADDON_IMPS` key) | **`NEXTCLOUD`** |
+| osf.io `INSTALLED_APPS` entry | `nextcloud_plugin.addon` |
+| osf.io addon `short_name` / app label | `nextcloud` / `addons_nextcloud` |
+| WaterButler entry-point name / provider `NAME` | `nextcloud` |
+| `ExternalStorageService.wb_key` | `nextcloud` |
+
+⚠️ **Casing footgun.** GravyValet derives the runtime service name as
+`external_service_name = (the ADDON_IMPS key).lower()`, and osf.io matches the addon by
+`external_service_name == short_name`. So the `ADDON_IMPS` key must be the **uppercase `addon_imp_name`
+`NEXTCLOUD`** — its lowercase is the canonical `nextcloud`. Do **not** use the package name
+`nextcloud_plugin.addon_imp` as the `ADDON_IMPS` key: the imp will still resolve, but the derived service
+name becomes `nextcloud_plugin.addon_imp`, which won't match osf.io's `short_name`, and file operations 404.
 
 ## Install / use
 

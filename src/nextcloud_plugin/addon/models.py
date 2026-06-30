@@ -21,9 +21,9 @@ from addons.base import exceptions
 from nextcloud_plugin.addon import settings
 from nextcloud_plugin.addon.serializer import NextcloudSerializer
 from nextcloud_plugin.addon.settings import DEFAULT_HOSTS, USE_SSL
-from osf.models.external import BasicAuthProviderMixin
 from website.util import api_v2_url
 
+from .provider import NextcloudProvider
 from .typedmodel_workaround import TypedModelRejoinMixin
 
 logger = logging.getLogger(__name__)
@@ -56,24 +56,8 @@ class NextcloudFile(NextcloudFileNode, File):
         proxy = True
 
 
-class NextcloudProvider(BasicAuthProviderMixin):
-    """An alternative to `ExternalProvider` not tied to OAuth."""
-
-    name = 'Nextcloud'
-    short_name = 'nextcloud'
-
-    def __init__(self, account=None, host=None, username=None, password=None):
-        if username:
-            username = username.lower()
-        return super().__init__(account=account, host=host, username=username, password=password)
-
-    def __repr__(self):
-        return '<{name}: {status}>'.format(
-            name=self.__class__.__name__,
-            status=self.account.display_name if self.account else 'anonymous'
-        )
-
-
+# UserSettings and NodeSettings are not used in GV-era, but needed if
+# ENABLE_GV is not set, and/or for migrations.
 class UserSettings(BaseOAuthUserSettings):
     oauth_provider = NextcloudProvider
     serializer = NextcloudSerializer

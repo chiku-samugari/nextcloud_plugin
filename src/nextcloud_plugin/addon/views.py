@@ -14,7 +14,7 @@ from website.project.decorators import (
     must_have_addon)
 
 import owncloud
-from nextcloud_plugin.addon.models import NextcloudProvider
+from nextcloud_plugin.addon.provider import NextcloudProvider
 from nextcloud_plugin.addon.serializer import NextcloudSerializer
 from nextcloud_plugin.addon import settings
 
